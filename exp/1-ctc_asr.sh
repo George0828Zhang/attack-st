@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-ARCH=${1:-s2t}
-TASK=${ARCH}_ctc_asr
+SEED=${1:-1}
+TASK=s2t_ctc_asr_${SEED}
 . ./data_path.sh
+CHECKASR=/home/george/simulst/exp/checkpoints/s2t_ctc_asr/checkpoint_last.pt
 
 python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
-    --config-yaml config_asr.yaml \
-    --train-subset train_st_pho_${TGT} \
-    --valid-subset dev_st_pho_${TGT} \
+    --load-pretrained-encoder-from ${CHECKASR} \
+    --config-yaml config_st_${SRC}_${TGT}.yaml \
+    --train-subset train_st_${SRC}_${TGT} \
+    --valid-subset dev_st_${SRC}_${TGT} \
     --max-tokens 160000 \
     --update-freq 2 \
     --task speech_to_text_infer --do-asr \
     --inference-config-yaml infer_asr.yaml \
-    --arch ${ARCH}_speech_encoder_s \
+    --arch s2t_speech_encoder_s \
     --criterion label_smoothed_ctc --label-smoothing 0.1 --report-accuracy \
-    --clip-norm 15.0 \
-    --optimizer adam --lr 5e-4 --lr-scheduler inverse_sqrt \
+    --clip-norm 10.0 \
+    --optimizer adam --lr 2e-3 --lr-scheduler inverse_sqrt \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
     --no-epoch-checkpoints \
-    --wandb-project simulst-covost \
+    --wandb-project attack-st \
     --best-checkpoint-metric wer \
     --save-interval-updates 500 \
     --keep-interval-updates 1 \
@@ -28,4 +30,4 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --log-format simple --log-interval 50 \
     --num-workers 4 \
     --fp16 \
-    --seed 1
+    --seed ${SEED}

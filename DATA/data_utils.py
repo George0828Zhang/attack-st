@@ -71,7 +71,7 @@ def gen_vocab(
 
 
 def _get_kaldi_fbank(
-    waveform: torch.FloatTensor, sample_rate: int, n_bins=80
+    waveform: torch.FloatTensor, sample_rate: int, n_bins=80, device=None
 ) -> Optional[torch.FloatTensor]:
     """Get mel-filter bank features via PyKaldi."""
     try:
@@ -83,9 +83,13 @@ def _get_kaldi_fbank(
         mel_opts.num_bins = n_bins
         frame_opts = FrameExtractionOptions()
         frame_opts.samp_freq = sample_rate
+        frame_opts.dither = 0.0
         opts = FbankOptions()
         opts.mel_opts = mel_opts
         opts.frame_opts = frame_opts
+        opts.energy_floor = 1.0
+        if device is not None:
+            opts.device = device
         fbank = Fbank(opts=opts)
         features = fbank(waveform.squeeze())
         return features

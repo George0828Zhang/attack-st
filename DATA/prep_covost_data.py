@@ -236,7 +236,8 @@ def process(args):
     audio_paths, audio_lengths = get_zip_manifest(zip_path)
     # Generate TSV manifest
     print("Generating manifest...")
-    train_text = []
+    train_text_src = []
+    train_text_tgt = []
     src_normalizer = TextNormalizer(args.src_lang)
     tgt_normalizer = TextNormalizer(args.tgt_lang)
     task = f"asr_{args.src_lang}"
@@ -262,17 +263,27 @@ def process(args):
             manifest["speaker"].append(speaker_id)
         is_train_split = split.startswith("train")
         if is_train_split:
-            train_text.extend(manifest["tgt_text"])
-            if args.joint_dict:
-                train_text.extend(manifest["src_text"])
+            train_text_tgt.extend(manifest["tgt_text"])
+            train_text_src.extend(manifest["src_text"])
+
         df = pd.DataFrame.from_dict(manifest)
         df = filter_manifest_df(df, is_train_split=is_train_split)
         save_df_to_tsv(df, root / f"{split}_{task}.tsv")
     # Generate vocab
     vocab_size_str = "" if args.vocab_type == "char" else str(args.vocab_size)
-    spm_filename_prefix = f"spm_{args.vocab_type}{vocab_size_str}_{task}"
+    spm_filename_prefix = f"spm_{args.vocab_type}{vocab_size_str}_st_{args.src_lang}"
     with NamedTemporaryFile(mode="w") as f:
-        for t in train_text:
+        for t in train_text_src:
+            f.write(t + "\n")
+        gen_vocab(
+            Path(f.name),
+            root / spm_filename_prefix,
+            args.vocab_type,
+            args.vocab_size
+        )
+    spm_filename_prefix = f"spm_{args.vocab_type}{vocab_size_str}_st_{args.tgt_lang}"
+    with NamedTemporaryFile(mode="w") as f:
+        for t in train_text_tgt:
             f.write(t + "\n")
         gen_vocab(
             Path(f.name),
@@ -317,7 +328,6 @@ def main():
                         "works only when zip is already present"
                         )
     parser.add_argument("--jieba", action="store_true", help="use jieba for chinese.")
-    parser.add_argument("--joint-dict", action="store_true", help="use joint dictionary.")
     parser.add_argument(
         "--cmvn-type", default="utterance",
         choices=["global", "utterance"],

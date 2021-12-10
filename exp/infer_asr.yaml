@@ -1,2 +1,8 @@
 eval_wer: true
-print_samples: false # phoneme, hard to understance...
+print_samples: true
+post_process: sentencepiece
+eval_wer_args:
+  wer_tokenizer: 13a
+  wer_remove_punct: true
+  wer_lowercase: true
+  wer_char_level: false

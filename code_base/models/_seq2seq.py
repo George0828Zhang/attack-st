@@ -33,11 +33,13 @@ from fairseq.models.speech_to_text.s2t_transformer import (
 # )
 
 # user
-from speech_encoder import (
-    S2TCausalSpeechEncoder,
-    ConvCausalSpeechEncoder,
-    s2t_speech_encoder_s,
-    conv_speech_encoder_s
+from .speech_encoder import (
+    # S2TCausalSpeechEncoder,
+    # ConvCausalSpeechEncoder,
+    # s2t_speech_encoder_s,
+    # conv_speech_encoder_s
+    SpeechEncoder,
+    s2t_speech_encoder_s
 )
 
 logger = logging.getLogger(__name__)
@@ -578,22 +580,6 @@ class SpeechTextCascadedEncoder(FairseqEncoder):
         return shrinked_states, shrink_lengths
 
 
-@register_model("s2t_seq2seq")
-@create_seq2seq_model
-class S2TSeq2SeqModel(S2TCausalSpeechEncoder):
-    @classmethod
-    def default_args(cls, args):
-        s2t_seq2seq_s(args)
-
-
-@register_model("conv_seq2seq")
-@create_seq2seq_model
-class ConvSeq2SeqModel(ConvCausalSpeechEncoder):
-    @classmethod
-    def default_args(cls, args):
-        conv_seq2seq_s(args)
-
-
 @register_model_architecture(
     "s2t_seq2seq", "s2t_seq2seq_s"
 )
@@ -608,20 +594,3 @@ def s2t_seq2seq_s(args):
     args.share_decoder_input_output_embed = True
 
     s2t_speech_encoder_s(args)
-
-
-@register_model_architecture(
-    "conv_seq2seq", "conv_seq2seq_s"
-)
-def conv_seq2seq_s(args):
-    args.encoder_freezing_updates = getattr(args, "encoder_freezing_updates", 0)
-    args.text_encoder_layers = getattr(args, "text_encoder_layers", 6)
-    args.decoder_layers = getattr(args, "decoder_layers", 6)
-    args.do_weighted_shrink = getattr(args, "do_weighted_shrink", False)
-    if args.do_weighted_shrink:
-        args.fixed_shrink_ratio = 1
-    else:
-        args.fixed_shrink_ratio = getattr(args, "fixed_shrink_ratio", 1)
-    args.share_decoder_input_output_embed = True
-
-    conv_speech_encoder_s(args)

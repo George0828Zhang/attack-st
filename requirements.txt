@@ -9,6 +9,7 @@ sentencepiece
 tqdm
 tensorboard
 tensorboardX
+wandb
 asr-evaluation
 kaldifeat
 jieba_fast

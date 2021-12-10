@@ -7,7 +7,7 @@ import logging
 import torch
 import numpy as np
 from fairseq import metrics, utils
-from fairseq.tasks import register_task, LegacyFairseqTask
+from fairseq.tasks import register_task
 from fairseq.logging.meters import safe_round
 
 from fairseq.scoring.bleu import SacrebleuScorer
@@ -17,7 +17,6 @@ from examples.speech_text_joint_to_text.tasks.speech_text_joint import SpeechTex
 logger = logging.getLogger(__name__)
 
 from .inference_config import InferenceConfig
-from .waitk_sequence_generator import WaitkSequenceGenerator
 EVAL_BLEU_ORDER = 4
 
 
@@ -48,6 +47,10 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
         # bpe_tokenizer is handled by post_process.
         self.pre_tokenizer = self.build_src_tokenizer(None) if self.do_asr else self.build_tokenizer(None)
 
+    @property
+    def decode_dict(self):
+        return self.src_dict if self.do_asr else self.tgt_dict
+
     def build_model(self, args):
         model = super().build_model(args)
         if self.inference_cfg.eval_any:
@@ -56,35 +59,6 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
                 self.inference_cfg.generation_args,
             )
         return model
-
-    # def build_generator(
-    #     self,
-    #     models,
-    #     args,
-    #     seq_gen_cls=None,
-    #     extra_gen_cls_kwargs=None,
-    # ):
-    #     """ speech_to_text ignores seq_gen_cls and overrides
-    #     extra_gen_cls_kwargs. So we will call LegacyFairseqTask's
-    #     method. """
-    #     waitk = getattr(models[0], "waitk", None)
-    #     test_waitk = getattr(self.inference_cfg.generation_args, "waitk", None)
-    #     if test_waitk is not None and test_waitk != waitk:
-    #         # test override.
-    #         logger.warning(f"Train test mismatch: training wait-{waitk}, while testing wait-{test_waitk}.")
-    #         waitk = test_waitk
-    #     stride = 1
-    #     if waitk is not None:
-    #         stride = getattr(models[0], "waitk_stride", 1)
-    #         seq_gen_cls = WaitkSequenceGenerator
-    #         extra = {"waitk": waitk, "waitk_stride": stride}
-    #         if extra_gen_cls_kwargs:
-    #             extra_gen_cls_kwargs.update(extra)
-    #         else:
-    #             extra_gen_cls_kwargs = extra
-    #     return LegacyFairseqTask.build_generator(
-    #         self, models, args, seq_gen_cls=seq_gen_cls, extra_gen_cls_kwargs=extra_gen_cls_kwargs
-    #     )
 
     def process_sample(self, sample):
         """
@@ -139,7 +113,7 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
         if getattr(models[0], "one_pass_decoding", False):
             # one-pass decoding
             if hasattr(self, 'blank_symbol'):
-                sample["net_input"]["blank_idx"] = self.tgt_dict.index(self.blank_symbol)
+                sample["net_input"]["blank_idx"] = self.decode_dict.index(self.blank_symbol)
             return models[0].generate(**sample["net_input"])
         else:
             # incremental decoding
@@ -150,7 +124,7 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
     def _inference_with_metrics(self, generator, sample, model):
 
         def decode(toks, escape_unk=False):
-            s = self.tgt_dict.string(
+            s = self.decode_dict.string(
                 toks.int().cpu(),
                 self.inference_cfg.post_process,  # this will handle bpe for us.
                 # The default unknown string in fairseq is `<unk>`, but
@@ -172,7 +146,7 @@ class SpeechToTextWInferenceTask(SpeechTextJointToTextTask):
             )
             refs.append(
                 decode(
-                    utils.strip_pad(sample["target"][i], self.tgt_dict.pad()),
+                    utils.strip_pad(sample["target"][i], self.decode_dict.pad()),
                     escape_unk=True,  # don't count <unk> as matches to the hypo
                 )
             )
