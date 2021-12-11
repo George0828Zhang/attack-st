@@ -9,7 +9,7 @@ import os
 
 for file in sorted(os.listdir(os.path.dirname(__file__))):
     if file.endswith(".py") and not file.startswith("_"):
-        file_name = file[: file.find(".py")]
+        model_name = file[: file.find(".py")]
         importlib.import_module(
-            "code_base.tasks." + file_name
+            "codebase.models." + model_name
         )

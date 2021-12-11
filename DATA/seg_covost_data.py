@@ -19,24 +19,26 @@ logger = logging.getLogger(__name__)
 
 def main(args):
     root = Path(args.data_root).absolute() / args.src_lang
-    lang = args.tgt_lang
     split = args.split
 
     if not root.is_dir():
         raise NotADirectoryError(f"{root} does not exist")
 
-    dataset = CoVoST(root.as_posix(), split, args.src_lang, lang)
+    dataset = CoVoST(root.as_posix(), split, args.src_lang, args.tgt_lang)
     output = Path(args.output).absolute()
     output.mkdir(exist_ok=True)
     (output / "wav").mkdir(exist_ok=True)
-    f_text = open(output / f"{split}.{lang}", "w")
+    f_text_src = open(output / f"{split}.{args.src_lang}", "w")
+    f_text_tgt = open(output / f"{split}.{args.tgt_lang}", "w")
     f_wav_list = open(output / f"{split}.wav_list", "w")
     if args.mp3:
         f_mp3_list = open(output / f"{split}.mp3_list", "w")
 
     too_long = []
 
-    for i, (waveform, sample_rate, _, text, _, utt_id) in enumerate(tqdm(dataset)):
+    for i, (waveform, sample_rate, src_text, tgt_text, _, utt_id) in enumerate(tqdm(dataset, total=args.max_instance)):
+        if i > args.max_instance:
+            break
         duration_ms = int(waveform.size(1) / sample_rate * 1000)
         n_frames = int(1 + (duration_ms - 25) / 10)
         if n_frames > args.max_frames:
@@ -49,7 +51,8 @@ def main(args):
             waveform.squeeze(0).numpy(),
             samplerate=int(sample_rate)
         )
-        f_text.write(text + "\n")
+        f_text_src.write(src_text + "\n")
+        f_text_tgt.write(tgt_text + "\n")
         f_wav_list.write(str(wav_path) + "\n")
 
         if args.mp3:
@@ -59,7 +62,8 @@ def main(args):
     logger.info(f"| long speech (>{args.max_frames} frames): {len(too_long)} filtered, first few id: {too_long[:5]}. ")
     logger.info("Done.")
 
-    f_text.close()
+    f_text_src.close()
+    f_text_tgt.close()
     f_wav_list.close()
     if args.mp3:
         f_mp3_list.close()
@@ -76,6 +80,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--split", required=True, choices=CoVoST.SPLITS)
     parser.add_argument("--max-frames", default=60000, type=int)
+    parser.add_argument("--max-instance", default=20000, type=int)
     parser.add_argument("--mp3", action="store_true")
     args = parser.parse_args()
 

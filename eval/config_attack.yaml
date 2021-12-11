@@ -1,0 +1,9 @@
+bpe_tokenizer:
+  bpe: sentencepiece
+  sentencepiece_model: /media/george/Data/covost2-atk/en/external/spm_char.model
+vocab_filename: /media/george/Data/covost2-atk/en/external/spm_char.txt
+input_channels: 1
+input_feat_per_channel: 80
+sample_rate: 48000
+use_audio_input: true
+use_sample_rate: null
