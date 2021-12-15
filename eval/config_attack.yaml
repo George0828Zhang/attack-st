@@ -1,3 +1,7 @@
+src_bpe_tokenizer:
+  bpe: sentencepiece
+  sentencepiece_model: /media/george/Data/covost2-atk/en/external/spm_char.model
+src_vocab_filename: /media/george/Data/covost2-atk/en/external/spm_char.txt
 bpe_tokenizer:
   bpe: sentencepiece
   sentencepiece_model: /media/george/Data/covost2-atk/en/external/spm_char.model
