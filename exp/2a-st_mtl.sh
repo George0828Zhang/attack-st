@@ -15,7 +15,6 @@ while [[ $# -gt 0 ]]; do
       CRITERION="--criterion label_smoothed_mtl --asr-factor 0.3 --report-accuracy"
       F2="mtl"
       shift # past argument
-      shift # past value
       ;;
     -s|--seed)
       SEED="--seed $2"

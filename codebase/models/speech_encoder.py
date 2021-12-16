@@ -150,6 +150,14 @@ class SpeechEncoder(S2TTransformerEncoder):
         self.src_dict = src_dict
         self.ctc_projection = ctc_projection
 
+    def forward(
+        self,
+        src_tokens, src_lengths, return_all_hiddens=False,
+        src_txt_tokens=None,  # unused
+        src_txt_lengths=None,  # unused
+    ):
+        return super().forward(src_tokens, src_lengths, return_all_hiddens)
+
     def load_state_dict(self, state_dict, strict=True):
         """
         1. ignores ctc_projection if not available
