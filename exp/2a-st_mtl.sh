@@ -59,6 +59,7 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --warmup-updates 10000 \
     --max-update 300000 \
     --save-dir checkpoints/${TASK} \
+    --wandb-project attack-st \
     --no-epoch-checkpoints \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --save-interval-updates 500 \
@@ -68,5 +69,4 @@ python -m fairseq_cli.train ${DATA} --user-dir ${USERDIR} \
     --log-format simple --log-interval 50 \
     --num-workers 4 \
     --fp16
-    # --wandb-project attack-st \
     
