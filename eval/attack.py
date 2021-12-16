@@ -1,23 +1,16 @@
 import torch
-import torch.nn as nn
+# import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.transforms import transforms
-from torch.utils.data import Dataset, DataLoader
 
 from fairseq import (
     checkpoint_utils,
-    options,
-    quantization_utils,
     tasks,
     utils,
 )
 from fairseq.data.audio.speech_to_text_dataset import get_features_or_waveform
 from fairseq.data.audio.feature_transforms import (
-    AudioFeatureTransform,
     CompositeAudioFeatureTransform,
-    # register_audio_feature_transform,
 )
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf
 from utils import (
     UtteranceCMVNPyTorch,
     FBankPyTorch
@@ -25,18 +18,16 @@ from utils import (
 from fairseq.data.audio.speech_to_text_dataset import SpeechToTextDataset
 
 import logging
-import os
-import torch
 from tqdm.auto import tqdm
 
 # general
 import math
-import shutil
-import numpy as np
+# import shutil
+# import numpy as np
+from pathlib import Path
+import soundfile as sf
 import sys
-import logging
 import argparse
-import os
 import glob
 
 
@@ -73,9 +64,9 @@ def ensemble_logits(logits):
     return avg_probs
 
 
-def calc_db(x_adv, x):
+def calc_db(x_adv, x, margin=1e-8):
     def f_db(z):
-        return math.log10(z.abs().max()) * 20
+        return math.log10(z.abs().max() + margin) * 20
     return f_db(x_adv - x) - f_db(x)
 
 
@@ -176,8 +167,8 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
         loss.backward()
         # loss.backward(retain_graph=True)
 
-        grad = x_adv.grad.detach()
-        # grad = grad / torch.mean(torch.abs(grad), dim=(1,2,3), keepdim=True)
+        grad = x_adv.grad.detach()  # (bsz, length)
+        grad = grad / torch.mean(torch.abs(grad), dim=(1,), keepdim=True)
         grad = grad + momentum * decay
         momentum = grad
 
@@ -239,26 +230,26 @@ class Attacker:
         with open(args.text, "r") as f:
             tgt_texts = [line.strip() for line in f]
         lengths = [get_features_or_waveform(p).shape[0] for p in lines]
-
+        dataset = SpeechToTextDataset(
+            "attack", False, task.data_cfg,
+            lines, lengths, tgt_texts=tgt_texts, tgt_dict=task.tgt_dict,
+            pre_tokenizer=task.build_tokenizer(None),
+            bpe_tokenizer=task.build_bpe(None),
+        )
         data_iter = task.get_batch_iterator(
-            dataset=SpeechToTextDataset(
-                "attack", False, task.data_cfg,
-                lines, lengths, tgt_texts=tgt_texts, tgt_dict=task.tgt_dict,
-                pre_tokenizer=task.build_tokenizer(None),
-                bpe_tokenizer=task.build_bpe(None),
-            ),
+            dataset=dataset,
             max_sentences=self.batch_size,
             max_positions=60000
         )
         # usage: itr = data_iter.next_epoch_itr(shuffle=False)
-        return data_iter
+        return data_iter, dataset
 
     def solve(self,):
 
         args = self.args
         models, cfgs = self.load_models(args)
-        task = tasks.setup_task(cfgs[0].task)
-        epochs_iter = self.load_data(args, task)
+        task = tasks.setup_task(cfgs[0].task)  # includes dictionary, tokenizer, bpe information
+        epochs_iter, benign_set = self.load_data(args, task)
 
         input_transform = CompositeAudioFeatureTransform([
             FBankPyTorch(denormalize=True, num_mel_bins=80, sample_rate=48000),
@@ -267,6 +258,8 @@ class Attacker:
         logger.info(input_transform)
 
         adv_wavs = []
+        adv_ids = []
+        total_dBs = []
         bar = tqdm(epochs_iter.next_epoch_itr(shuffle=False), desc="sample")
         for sample in bar:
             sample = utils.move_to_cuda(sample)
@@ -281,22 +274,53 @@ class Attacker:
                 random_start=self.args.random_start,
                 decay=self.args.decay
             )
-            bar.set_postfix(dB=calc_db(wav, sample["net_input"]["src_tokens"]))
-            adv_wavs.append(wav)
+            wav = wav.detach().cpu()
+            benign = sample["net_input"]["src_tokens"].cpu()
+            error = (wav - benign).abs()
+            assert not (error > self.epsilon).any()
+            dBs = [calc_db(a, b) for a, b in zip(wav, benign)]
+            total_dBs += dBs
+            bar.set_postfix(dB=sum(dBs) / len(dBs))
+            adv_wavs.extend(wav)
+            adv_ids.extend(sample["id"].tolist())
 
-        # if self.args.savedir is not None:
-        #     logger.info("validating image constraints...")
-        #     # final_adv = []
-        #     for idx, im in enumerate(adv_examples):
-        #         orig = np.array(Image.open(self.adv_set.images[idx]))
-        #         error = np.absolute(im - orig)
-        #         assert not (error > self.args.epsilon_pixels).any()
-        #         # if (error > self.args.epsilon_pixels).any():
-        #         #     logger.warning(f"allowed: {self.args.epsilon_pixels}, got max: {error.max()} avg: {error.mean()}")
-        #         # final_adv.append(
-        #         #     np.clip(im, orig-args.epsilon_pixels, orig+args.epsilon_pixels))
+        logger.info(f"Average distortion (dB): {sum(total_dBs)/len(total_dBs):.3f}")
 
-        #     self.create_dir(self.args.datadir, self.args.savedir, adv_examples)
+        if self.args.savedir is not None:
+            adv_wavs = [a for a, b in sorted(zip(adv_wavs, adv_ids), key=lambda x: x[1])]
+            adv_ids = sorted(adv_ids)
+            logger.info("validating wave constraints...")
+
+            output = Path(self.args.savedir).absolute()
+            output.mkdir(exist_ok=True)
+            (output / "wav").mkdir(exist_ok=True)
+            f_wav_list = open(output / "adv.wav_list", "w")
+
+            sample_rate = 48000
+            for i, (waveform, utt_id) in enumerate(zip(adv_wavs, adv_ids)):
+
+                wav_path = (output / "wav" / f"{utt_id}.wav").as_posix()
+                sf.write(
+                    wav_path,
+                    waveform.squeeze(0).cpu().numpy(),
+                    samplerate=int(sample_rate)
+                )
+                f_wav_list.write(str(wav_path) + "\n")
+
+            f_wav_list.close()
+
+    #     self.validate(adv_wavs, benign_set)
+
+    # def validate(self, adv_wavs, benign_set):
+    #     assert len(adv_wavs) == len(benign_set)
+    #     benign_wavs = [d.source for d in benign_set]
+    #     dBs = []
+    #     for adv, benign in zip(adv_wavs, benign_wavs):
+    #         error = (adv - benign).abs()
+    #         assert not (error > self.epsilon).any()
+    #         dBs.append(calc_db(adv, benign))
+
+    #     logger.info(f"Average distortion (dB): {sum(dBs)/len(dBs):.3f}")
 
     @staticmethod
     def add_args(parser):
@@ -304,8 +328,8 @@ class Attacker:
         parser.add_argument("--user-dir", default="../codebase")
         parser.add_argument("--config-yaml", default="./config_attack.yaml")
         # data
-        parser.add_argument("--wav-list", default="./data/dev.wav_list")
-        parser.add_argument("--text", default="./data/dev.en")
+        parser.add_argument("--wav-list", default="./data/test2.wav_list")
+        parser.add_argument("--text", default="./data/test2.en")
         # parser.add_argument("--num-workers", type=int, default=2)
         parser.add_argument("--epsilon", type=float, default=400,
                             help="epsilon for Linf for waveform assuming 16-bit integer")
