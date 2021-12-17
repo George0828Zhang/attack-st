@@ -49,9 +49,11 @@ EXTRAARGS=""
 
 if [[ $AVG == "true" ]]; then
     CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-    python ../scripts/average_checkpoints.py \
-      --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-      --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
+    if [ ! -f ${CHECKDIR}/${CHECKPOINT_FILENAME} ]; then
+      python ../scripts/average_checkpoints.py \
+        --inputs ${CHECKDIR} --num-best-checkpoints 5 \
+        --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
+    fi
 else
     CHECKPOINT_FILENAME=checkpoint_best.pt
 fi
