@@ -106,9 +106,11 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
 
         # collate
         max_len = max(src_lengths)
-        out = frames[0].new_zeros((len(frames), max_len, frames[0].size(1)))
         for i, v in enumerate(frames):
-            out[i, : v.size(0)] = v
+            if v.size(0) < max_len:
+                frames[i] = torch.cat(
+                    (v, v.new_zeros(max_len - v.size(0), v.size(1))), dim=0)
+        out = torch.stack(frames, dim=0)
         return out, torch.LongTensor(src_lengths).type_as(prev_y)
 
     for _ in bar:
@@ -195,7 +197,7 @@ class Attacker:
         self.device = torch.device('cuda' if not args.cpu and torch.cuda.is_available() else 'cpu')
 
         self.epsilon = args.epsilon / (2**15)
-        self.alpha = self.epsilon / 10.
+        self.alpha = self.epsilon / args.num_iter
 
     def load_models(self, args):
         logger.info("loading model(s) from {}".format(args.model_dir))
@@ -206,7 +208,7 @@ class Attacker:
             states = checkpoint_utils.load_checkpoint_to_cpu(
                 path=checkpoint, arg_overrides=None, load_on_all_ranks=False)
             cfg = states["cfg"]
-            cfg.task.config_yaml = args.config_yaml
+            cfg.task.config_yaml = Path(args.config_yaml).resolve().as_posix()
             cfg.common.user_dir = args.user_dir
             utils.import_user_module(cfg.common)
 
@@ -218,6 +220,16 @@ class Attacker:
             )
             model.to(self.device)
             model.prepare_for_inference_(cfg)
+
+            for prev_m in all_models:
+                assert model is not prev_m
+                all_same = True
+                for p1, p2 in zip(model.parameters(), prev_m.parameters()):
+                    if p1.data.ne(p2.data).any():
+                        all_same = False
+                        break
+                assert not all_same
+
             all_config.append(cfg)
             all_models.append(model)
             logger.info("loaded model from {}".format(checkpoint))
@@ -242,20 +254,29 @@ class Attacker:
             max_positions=60000
         )
         # usage: itr = data_iter.next_epoch_itr(shuffle=False)
-        return data_iter, dataset
+        return data_iter
 
     def solve(self,):
 
         args = self.args
         models, cfgs = self.load_models(args)
         task = tasks.setup_task(cfgs[0].task)  # includes dictionary, tokenizer, bpe information
-        epochs_iter, benign_set = self.load_data(args, task)
+        epochs_iter = self.load_data(args, task)
 
         input_transform = CompositeAudioFeatureTransform([
             FBankPyTorch(denormalize=True, num_mel_bins=80, sample_rate=48000),
             UtteranceCMVNPyTorch(norm_means=True, norm_vars=True)
         ])
         logger.info(input_transform)
+        _settings = argparse.Namespace(
+            num_models=len(models),
+            epsilon=self.epsilon,
+            alpha=self.alpha,
+            num_iter=self.args.num_iter,
+            random_start=self.args.random_start,
+            decay=self.args.decay
+        )
+        logger.info(f"Settings: {_settings}")
 
         adv_wavs = []
         adv_ids = []
@@ -284,7 +305,8 @@ class Attacker:
             adv_wavs.extend(wav)
             adv_ids.extend(sample["id"].tolist())
 
-        logger.info(f"Average distortion (dB): {sum(total_dBs)/len(total_dBs):.3f}")
+        average_dB = sum(total_dBs) / len(total_dBs)
+        logger.info(f"Average distortion (dB): {average_dB:.3f}")
 
         if self.args.savedir is not None:
             adv_wavs = [a for a, b in sorted(zip(adv_wavs, adv_ids), key=lambda x: x[1])]
@@ -309,6 +331,9 @@ class Attacker:
 
             f_wav_list.close()
 
+            with open(output / "distortion", "w") as f:
+                f.write(f"Average distortion (dB): {average_dB:.3f}\n")
+
     #     self.validate(adv_wavs, benign_set)
 
     # def validate(self, adv_wavs, benign_set):
@@ -328,16 +353,16 @@ class Attacker:
         parser.add_argument("--user-dir", default="../codebase")
         parser.add_argument("--config-yaml", default="./config_attack.yaml")
         # data
-        parser.add_argument("--wav-list", default="./data/test2.wav_list")
-        parser.add_argument("--text", default="./data/test2.en")
+        parser.add_argument("--wav-list", default="./benign/test.wav_list")
+        parser.add_argument("--text", default="./benign/test.en")
         # parser.add_argument("--num-workers", type=int, default=2)
-        parser.add_argument("--epsilon", type=float, default=400,
-                            help="epsilon for Linf for waveform assuming 16-bit integer")
+        parser.add_argument("--epsilon", type=float, default=16.384,  # 400,
+                            help="epsilon for Linf for waveform assuming signed 16-bit integer")
         # training
         parser.add_argument("--batch-size", type=int, default=1)
         parser.add_argument("--cpu", action="store_true")
         # checkpoint
-        parser.add_argument("--model-dir", default="./models")
+        parser.add_argument("--model-dir", default="./models/ensemble")
 
         parser.add_argument("--iters", type=int, dest="num_iter", default=1)
 
