@@ -70,11 +70,40 @@ def calc_db(x_adv, x, margin=1e-8):
     return f_db(x_adv - x) - f_db(x)
 
 
-def targeted_fn(images, labels):
-    return (labels + 1) % 100
+@torch.no_grad()
+def mask_correct(lprobs, input_lengths, target, target_lengths, collapse=True):
+    blank_idx = 0
+
+    bsz = lprobs.size(0)
+    mask = lprobs.new_ones((bsz,))
+    for sent, lp, inp_l, targ, tgt_l in zip(
+        range(bsz),
+        lprobs,
+        input_lengths,
+        target,
+        target_lengths
+    ):
+        lp = lp[:inp_l]
+
+        toks = lp.argmax(dim=-1)
+
+        if collapse:
+            toks = toks.unique_consecutive()
+        if toks.eq(blank_idx).all():
+            toks = toks[:1]
+        else:
+            toks = toks[toks != blank_idx]
+
+        toks = toks.squeeze()
+        targ = targ[:tgt_l].squeeze()
+
+        if toks.size() == targ.size() and toks.eq(targ).all():
+            mask[sent] = 0
+
+    return mask
 
 
-def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, random_start, decay):
+def mifgsm(models, input_transform, sample, loss_fn, targeted, epsilon, alpha, num_iter, random_start, decay):
     """ x is waveform, y is sequence """
     x = sample["net_input"]["src_tokens"]
     x_len = sample["net_input"]["src_lengths"]
@@ -94,6 +123,8 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
         x_adv = zero_one_clamp(x_adv).detach()
 
     momentum = torch.zeros_like(x).detach().type_as(x)
+    if targeted:
+        alpha = -alpha
 
     def _collate(inputs):
         frames = []
@@ -114,6 +145,7 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
         return out, torch.LongTensor(src_lengths).type_as(prev_y)
 
     for _ in bar:
+        info = {}
         x_adv.requires_grad = True
         if x_adv.grad is not None:
             x_adv.grad.zero_()
@@ -149,7 +181,7 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
             loss = F.cross_entropy(
                 lprobs.view(bsz * lprobs.size(1), -1),
                 y.view(-1),
-                reduction="mean",
+                reduction="none",
             )
         elif loss_fn == "ctc":
             loss = F.ctc_loss(
@@ -158,7 +190,7 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
                 input_lengths,
                 target_lengths,
                 blank=blank_idx,
-                reduction="mean",
+                reduction="none",
                 zero_infinity=True,
             )
         elif loss_fn == "ctc_improved":
@@ -166,6 +198,23 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
         else:
             raise NotImplementedError(loss_fn)
 
+        if targeted:
+            mask = mask_correct(
+                lprobs.transpose(1, 0),
+                input_lengths,
+                y,
+                target_lengths,
+                collapse=loss_fn == "ctc"
+            )
+            n_remain = (mask == 1).sum().item()
+            info["n_remain"] = n_remain
+            if n_remain == 0:
+                break
+            loss *= mask / target_lengths
+            loss = loss.sum() / n_remain
+            # loss = loss.mean()
+        else:
+            loss = loss.mean()
         loss.backward()
         # loss.backward(retain_graph=True)
 
@@ -177,7 +226,8 @@ def mifgsm(models, input_transform, sample, loss_fn, epsilon, alpha, num_iter, r
         x_adv = x_adv + alpha * grad.sign()
         x_adv = clamp(x_adv, x, epsilon)
 
-        bar.set_postfix(loss=loss.item())
+        info["loss"] = loss.item()
+        bar.set_postfix(**info)
     return x_adv
 
 
@@ -197,7 +247,7 @@ class Attacker:
         self.device = torch.device('cuda' if not args.cpu and torch.cuda.is_available() else 'cpu')
 
         self.epsilon = args.epsilon / (2**15)
-        self.alpha = self.epsilon / args.num_iter
+        self.alpha = args.alpha / (2**15)
 
     def load_models(self, args):
         logger.info("loading model(s) from {}".format(args.model_dir))
@@ -289,6 +339,7 @@ class Attacker:
                 input_transform=input_transform,
                 sample=sample,
                 loss_fn="ctc",
+                targeted=self.args.targeted,
                 epsilon=self.epsilon,
                 alpha=self.alpha,
                 num_iter=self.args.num_iter,
@@ -358,6 +409,9 @@ class Attacker:
         # parser.add_argument("--num-workers", type=int, default=2)
         parser.add_argument("--epsilon", type=float, default=16.384,  # 400,
                             help="epsilon for Linf for waveform assuming signed 16-bit integer")
+        parser.add_argument("--alpha", type=float, default=0.32768,  # 400,
+                            help="alpha for waveform assuming signed 16-bit integer")
+        
         # training
         parser.add_argument("--batch-size", type=int, default=1)
         parser.add_argument("--cpu", action="store_true")
