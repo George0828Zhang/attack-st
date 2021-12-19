@@ -10,11 +10,6 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -b|--beam)
-      BEAM="$2"
-      shift # past argument
-      shift # past value
-      ;;
     -s|--source)
       SRC_FILE="$2"
       shift # past argument
@@ -40,54 +35,45 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
-MODEL=${MODEL:-s2t_st_load5_sd1}
-BEAM=${BEAM:-5}
+MODEL=${MODEL:-covost2_en_asr_transformer_s.pt}
 SRC_FILE=${SRC_FILE:-data/test.wav_list}
-TGT_FILE=${TGT_FILE:-data/test.zh-CN}
+TGT_FILE=${TGT_FILE:-data/test.en}
 EXP=${EXP:-../exp}
 . ${EXP}/data_path.sh
-CONF=$DATA/config_st_${SRC}_${TGT}.yaml
+CONF=$DATA/config_asr.yaml
 CHECKDIR=${EXP}/checkpoints/${MODEL}
 RESULTS=$(dirname ${SRC_FILE})_results/${MODEL}
-AVG=true
+AVG=false
+CHECKPOINT_FILENAME=${CHECKDIR}
 
-EXTRAARGS="--beam ${BEAM}
---max-len-a 0.1
---max-len-b 10
---post-process sentencepiece
-"
+EXTRAARGS=""
 
-if [[ $AVG == "true" ]]; then
-    CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-    if [ ! -f ${CHECKDIR}/${CHECKPOINT_FILENAME} ]; then
-        python ../scripts/average_checkpoints.py \
-            --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-            --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
-    fi
-else
-    CHECKPOINT_FILENAME=checkpoint_best.pt
-fi
+function char (){
+    sed -e 's/./& /g' -e "s/[[:punct:]]\+//g" -e 's/ \{2,\}/ /g' $1
+}
 
 mkdir -p ${RESULTS}
 
-lang=${TGT}
+lang=${SRC}
+# tsv=${DATA}/${SPLIT}_st_${SRC}_${TGT}.tsv
+# tail +2 ${tsv} | cut -f2 > ${RESULTS}/feats.${lang}
+# tail +2 ${tsv} | cut -f4 > ${RESULTS}/refs.${lang}
+# cat ${RESULTS}/feats.${lang} | \
 
 cp ${TGT_FILE} ${RESULTS}/refs.${lang}
 
 cat ${SRC_FILE} | \
 python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
     --config-yaml ${CONF} \
-    --task speech_to_text_infer \
-    --buffer-size 4096 --batch-size 64 \
-    --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
+    --gen-subset ${SPLIT}_st_${SRC}_${TGT} \
+    --task speech_to_text \
+    --buffer-size 4096 --batch-size 128 \
+    --path ${CHECKPOINT_FILENAME} \
     --model-overrides '{"load_pretrained_encoder_from": None}' \
     ${EXTRAARGS} | \
 grep -E "D-[0-9]+" | \
 cut -f3 > ${RESULTS}/hyps.${lang}
-
-echo "# evaluating BLEU"
-python -m sacrebleu ${RESULTS}/refs.${lang} \
-    -i ${RESULTS}/hyps.${lang} \
-    -m bleu \
-    --width 2 \
-    -tok zh | tee ${RESULTS}/score.${lang}
+# echo "# evaluating WER"
+# wer -a ${RESULTS}/refs.${lang} ${RESULTS}/hyps.${lang} | tee ${RESULTS}/score.${lang}
+echo "# evaluating CER"
+wer -i -a <(char ${RESULTS}/refs.${lang}) <(char ${RESULTS}/hyps.${lang}) | tee ${RESULTS}/char_score.${lang}
