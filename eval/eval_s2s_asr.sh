@@ -35,7 +35,7 @@ done
 set -- "${POSITIONAL[@]}" # restore positional parameters
 
 # defaults
-MODEL=${MODEL:-s2t_ctc_asr_1}
+MODEL=${MODEL:-covost2_en_asr_transformer_s.pt}
 SRC_FILE=${SRC_FILE:-data/test.wav_list}
 TGT_FILE=${TGT_FILE:-data/test.en}
 EXP=${EXP:-../exp}
@@ -43,20 +43,10 @@ EXP=${EXP:-../exp}
 CONF=$DATA/config_asr.yaml
 CHECKDIR=${EXP}/checkpoints/${MODEL}
 RESULTS=$(dirname ${SRC_FILE})_results/${MODEL}
-AVG=true
+AVG=false
+CHECKPOINT_FILENAME=${CHECKDIR}
 
 EXTRAARGS=""
-
-if [[ $AVG == "true" ]]; then
-    CHECKPOINT_FILENAME=avg_best_5_checkpoint.pt
-    if [ ! -f ${CHECKDIR}/${CHECKPOINT_FILENAME} ]; then
-      python ../scripts/average_checkpoints.py \
-        --inputs ${CHECKDIR} --num-best-checkpoints 5 \
-        --output "${CHECKDIR}/${CHECKPOINT_FILENAME}"
-    fi
-else
-    CHECKPOINT_FILENAME=checkpoint_best.pt
-fi
 
 function char (){
     sed -e 's/./& /g' -e "s/[[:punct:]]\+//g" -e 's/ \{2,\}/ /g' $1
@@ -76,10 +66,9 @@ cat ${SRC_FILE} | \
 python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
     --config-yaml ${CONF} \
     --gen-subset ${SPLIT}_st_${SRC}_${TGT} \
-    --task speech_to_text_infer --do-asr \
+    --task speech_to_text \
     --buffer-size 4096 --batch-size 128 \
-    --inference-config-yaml infer_asr.yaml \
-    --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
+    --path ${CHECKPOINT_FILENAME} \
     --model-overrides '{"load_pretrained_encoder_from": None}' \
     ${EXTRAARGS} | \
 grep -E "D-[0-9]+" | \

@@ -1,23 +1,60 @@
 #!/usr/bin/env bash
-TASK=s2t_fixed_seq2seq_scratch
-SPLIT=dev
-EXP=../exp
+# credits: https://stackoverflow.com/questions/192249/how-do-i-parse-command-line-arguments-in-bash
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  key="$1"
+
+  case $key in
+    -m|--model)
+      MODEL="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -b|--beam)
+      BEAM="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -s|--source)
+      SRC_FILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -t|--target)
+      TGT_FILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -e|--exp)
+      EXP="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    *)    # unknown option
+      POSITIONAL+=("$1") # save it in an array for later
+      shift # past argument
+      ;;
+  esac
+done
+
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+# defaults
+MODEL=${MODEL:-s2t_st_load5_sd1}
+BEAM=${BEAM:-5}
+SRC_FILE=${SRC_FILE:-data/test.wav_list}
+TGT_FILE=${TGT_FILE:-data/test.zh-CN}
+EXP=${EXP:-../exp}
 . ${EXP}/data_path.sh
 CONF=$DATA/config_st_${SRC}_${TGT}.yaml
-CHECKDIR=${EXP}/checkpoints/${TASK}
-RESULTS=${TASK}.${SPLIT}.results/
-AVG=false
-BLEU_TOK=13a
+CHECKDIR=${EXP}/checkpoints/${MODEL}
+RESULTS=$(dirname ${SRC_FILE})_results/${MODEL}
+AVG=true
 
-if [[ ${TGT} == "zh" ]] || [[ ${TGT} == "zh-CN" ]]; then
-    BLEU_TOK=zh
-fi
-GENARGS="--beam 1
+EXTRAARGS="--beam ${BEAM}
 --max-len-a 0.1
 --max-len-b 10
 --post-process sentencepiece
---scoring sacrebleu
---sacrebleu-tokenizer ${BLEU_TOK}
 "
 
 if [[ $AVG == "true" ]]; then
@@ -31,35 +68,26 @@ else
     CHECKPOINT_FILENAME=checkpoint_best.pt
 fi
 
-lang=${TGT}
 mkdir -p ${RESULTS}
 
-# python -m fairseq_cli.generate ${DATA} --user-dir ${USERDIR} \
-#     --config-yaml ${CONF} --gen-subset ${SPLIT}_st_pho_${TGT} \
-#     --task speech_to_text_infer \
-#     --max-tokens 80000 \
-#     --inference-config-yaml ../exp/infer_st.yaml \
-#     --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
-#     --model-overrides '{"load_pretrained_encoder_from": None}' \
-#     --results-path ${RESULTS} \
-#     ${GENARGS}
+lang=${TGT}
 
-python ../DATA/text_processors.py zh < data/${SPLIT}.${lang} > ${RESULTS}/refs.${lang}
-cat data/${SPLIT}.${lang} > ${RESULTS}/refs.${lang}
-cat data/${SPLIT}.wav_list | \
-    python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
-    --config-yaml ${CONF} --gen-subset ${SPLIT}_st_pho_${TGT} \
+cp ${TGT_FILE} ${RESULTS}/refs.${lang}
+
+cat ${SRC_FILE} | \
+python -m fairseq_cli.interactive ${DATA} --user-dir ${USERDIR} \
+    --config-yaml ${CONF} \
     --task speech_to_text_infer \
-    --buffer-size 1024 --batch-size 256 \
-    --inference-config-yaml ../exp/infer_st.yaml \
+    --buffer-size 4096 --batch-size 64 \
     --path ${CHECKDIR}/${CHECKPOINT_FILENAME} \
     --model-overrides '{"load_pretrained_encoder_from": None}' \
-    ${GENARGS} ${EXTRAARGS} | \
-    grep -E "H-[0-9]+" | \
-    cut -f3 > ${RESULTS}/hyps.${lang}
+    ${EXTRAARGS} | \
+grep -E "D-[0-9]+" | \
+cut -f3 > ${RESULTS}/hyps.${lang}
 
+echo "# evaluating BLEU"
 python -m sacrebleu ${RESULTS}/refs.${lang} \
     -i ${RESULTS}/hyps.${lang} \
     -m bleu \
     --width 2 \
-    -tok ${BLEU_TOK} | tee ${RESULTS}/score.${lang}
+    -tok zh | tee ${RESULTS}/score.${lang}
