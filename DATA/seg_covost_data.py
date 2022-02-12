@@ -37,7 +37,7 @@ def main(args):
     too_long = []
 
     for i, (waveform, sample_rate, src_text, tgt_text, _, utt_id) in enumerate(tqdm(dataset, total=args.max_instance)):
-        if i > args.max_instance:
+        if i >= args.max_instance:
             break
         duration_ms = int(waveform.size(1) / sample_rate * 1000)
         n_frames = int(1 + (duration_ms - 25) / 10)
